@@ -13,6 +13,14 @@
 #include "internal/endian.h"
 #include "crypto/modes.h"
 
+#if defined(SM4_ASM) && (defined(__x86_64) || defined(__x86_64__) || defined(_M_AMD64) || defined(_M_X64))
+void hw_x86_64_sm4_encrypt(const unsigned char *in, unsigned char *out,
+    const void *key);
+void hw_x86_64_sm4_encrypt256(const unsigned char *in1,
+    const unsigned char *in2, unsigned char *out1, unsigned char *out2,
+    const void *key);
+#endif
+
 #if defined(__GNUC__) && !defined(STRICT_ALIGNMENT)
 typedef size_t size_t_aX __attribute((__aligned__(1)));
 #else
@@ -858,6 +866,58 @@ int CRYPTO_gcm128_encrypt(GCM128_CONTEXT *ctx,
             while (len >= GHASH_CHUNK) {
                 size_t j = GHASH_CHUNK;
 
+                while (j >= 32) {
+#if defined(SM4_ASM) && (defined(__x86_64) || defined(__x86_64__) || defined(_M_AMD64) || defined(_M_X64))
+                    if (block == (block128_f)hw_x86_64_sm4_encrypt) {
+                        size_t_aX *out_t = (size_t_aX *)out;
+                        const size_t_aX *in_t = (const size_t_aX *)in;
+                        union {
+                            u8 c[16];
+                            size_t_aX t[16 / sizeof(size_t)];
+                        } EKi2;
+                        union {
+                            u32 d[4];
+                            u8 c[16];
+                        } Yi2;
+
+                        memcpy(Yi2.c, ctx->Yi.c, sizeof(Yi2.c));
+                        ++ctr;
+                        if (IS_LITTLE_ENDIAN)
+#ifdef BSWAP4
+                            Yi2.d[3] = BSWAP4(ctr);
+#else
+                            PUTU32(Yi2.c + 12, ctr);
+#endif
+                        else
+                            Yi2.d[3] = ctr;
+
+                        hw_x86_64_sm4_encrypt256(ctx->Yi.c, Yi2.c,
+                            ctx->EKi.c, EKi2.c, key);
+
+                        ++ctr;
+                        if (IS_LITTLE_ENDIAN)
+#ifdef BSWAP4
+                            ctx->Yi.d[3] = BSWAP4(ctr);
+#else
+                            PUTU32(ctx->Yi.c + 12, ctr);
+#endif
+                        else
+                            ctx->Yi.d[3] = ctr;
+
+                        for (i = 0; i < 16 / sizeof(size_t); ++i) {
+                            out_t[i] = in_t[i] ^ ctx->EKi.t[i];
+                            out_t[i + 16 / sizeof(size_t)] =
+                                in_t[i + 16 / sizeof(size_t)] ^ EKi2.t[i];
+                        }
+                        out += 32;
+                        in += 32;
+                        j -= 32;
+                        continue;
+                    }
+#endif
+                    break;
+                }
+
                 while (j) {
                     size_t_aX *out_t = (size_t_aX *)out;
                     const size_t_aX *in_t = (const size_t_aX *)in;
@@ -885,6 +945,72 @@ int CRYPTO_gcm128_encrypt(GCM128_CONTEXT *ctx,
             if ((i = (len & (size_t)-16))) {
                 size_t j = i;
 
+                while (len >= 32) {
+                    size_t_aX *out_t = (size_t_aX *)out;
+                    const size_t_aX *in_t = (const size_t_aX *)in;
+#if defined(SM4_ASM) && (defined(__x86_64) || defined(__x86_64__) || defined(_M_AMD64) || defined(_M_X64))
+                    if (block == (block128_f)hw_x86_64_sm4_encrypt) {
+                        union {
+                            u8 c[16];
+                            size_t_aX t[16 / sizeof(size_t)];
+                        } EKi2;
+                        union {
+                            u32 d[4];
+                            u8 c[16];
+                        } Yi2;
+
+                        memcpy(Yi2.c, ctx->Yi.c, sizeof(Yi2.c));
+                        ++ctr;
+                        if (IS_LITTLE_ENDIAN)
+#ifdef BSWAP4
+                            Yi2.d[3] = BSWAP4(ctr);
+#else
+                            PUTU32(Yi2.c + 12, ctr);
+#endif
+                        else
+                            Yi2.d[3] = ctr;
+
+                        hw_x86_64_sm4_encrypt256(ctx->Yi.c, Yi2.c,
+                            ctx->EKi.c, EKi2.c, key);
+
+                        ++ctr;
+                        if (IS_LITTLE_ENDIAN)
+#ifdef BSWAP4
+                            ctx->Yi.d[3] = BSWAP4(ctr);
+#else
+                            PUTU32(ctx->Yi.c + 12, ctr);
+#endif
+                        else
+                            ctx->Yi.d[3] = ctr;
+
+                        for (i = 0; i < 16 / sizeof(size_t); ++i) {
+                            out_t[i] = in_t[i] ^ ctx->EKi.t[i];
+                            out_t[i + 16 / sizeof(size_t)] =
+                                in_t[i + 16 / sizeof(size_t)] ^ EKi2.t[i];
+                        }
+                        out += 32;
+                        in += 32;
+                        len -= 32;
+                        continue;
+                    }
+#endif
+
+                    (*block)(ctx->Yi.c, ctx->EKi.c, key);
+                    ++ctr;
+                    if (IS_LITTLE_ENDIAN)
+#ifdef BSWAP4
+                        ctx->Yi.d[3] = BSWAP4(ctr);
+#else
+                        PUTU32(ctx->Yi.c + 12, ctr);
+#endif
+                    else
+                        ctx->Yi.d[3] = ctr;
+                    for (i = 0; i < 16 / sizeof(size_t); ++i)
+                        out_t[i] = in_t[i] ^ ctx->EKi.t[i];
+                    out += 16;
+                    in += 16;
+                    len -= 16;
+                }
                 while (len >= 16) {
                     size_t_aX *out_t = (size_t_aX *)out;
                     const size_t_aX *in_t = (const size_t_aX *)in;
@@ -1086,6 +1212,57 @@ int CRYPTO_gcm128_decrypt(GCM128_CONTEXT *ctx,
                 size_t j = GHASH_CHUNK;
 
                 GHASH(ctx, in, GHASH_CHUNK);
+                while (j >= 32) {
+#if defined(SM4_ASM) && (defined(__x86_64) || defined(__x86_64__) || defined(_M_AMD64) || defined(_M_X64))
+                    if (block == (block128_f)hw_x86_64_sm4_encrypt) {
+                        size_t_aX *out_t = (size_t_aX *)out;
+                        const size_t_aX *in_t = (const size_t_aX *)in;
+                        union {
+                            u8 c[16];
+                            size_t_aX t[16 / sizeof(size_t)];
+                        } EKi2;
+                        union {
+                            u32 d[4];
+                            u8 c[16];
+                        } Yi2;
+
+                        memcpy(Yi2.c, ctx->Yi.c, sizeof(Yi2.c));
+                        ++ctr;
+                        if (IS_LITTLE_ENDIAN)
+#ifdef BSWAP4
+                            Yi2.d[3] = BSWAP4(ctr);
+#else
+                            PUTU32(Yi2.c + 12, ctr);
+#endif
+                        else
+                            Yi2.d[3] = ctr;
+
+                        hw_x86_64_sm4_encrypt256(ctx->Yi.c, Yi2.c,
+                            ctx->EKi.c, EKi2.c, key);
+
+                        ++ctr;
+                        if (IS_LITTLE_ENDIAN)
+#ifdef BSWAP4
+                            ctx->Yi.d[3] = BSWAP4(ctr);
+#else
+                            PUTU32(ctx->Yi.c + 12, ctr);
+#endif
+                        else
+                            ctx->Yi.d[3] = ctr;
+
+                        for (i = 0; i < 16 / sizeof(size_t); ++i) {
+                            out_t[i] = in_t[i] ^ ctx->EKi.t[i];
+                            out_t[i + 16 / sizeof(size_t)] =
+                                in_t[i + 16 / sizeof(size_t)] ^ EKi2.t[i];
+                        }
+                        out += 32;
+                        in += 32;
+                        j -= 32;
+                        continue;
+                    }
+#endif
+                    break;
+                }
                 while (j) {
                     size_t_aX *out_t = (size_t_aX *)out;
                     const size_t_aX *in_t = (const size_t_aX *)in;
@@ -1111,6 +1288,89 @@ int CRYPTO_gcm128_decrypt(GCM128_CONTEXT *ctx,
 #endif
             if ((i = (len & (size_t)-16))) {
                 GHASH(ctx, in, i);
+                while (len >= 32) {
+                    size_t_aX *out_t = (size_t_aX *)out;
+                    const size_t_aX *in_t = (const size_t_aX *)in;
+#if defined(SM4_ASM) && (defined(__x86_64) || defined(__x86_64__) || defined(_M_AMD64) || defined(_M_X64))
+                    if (block == (block128_f)hw_x86_64_sm4_encrypt) {
+                        union {
+                            u8 c[16];
+                            size_t_aX t[16 / sizeof(size_t)];
+                        } EKi2;
+                        union {
+                            u32 d[4];
+                            u8 c[16];
+                        } Yi2;
+
+                        memcpy(Yi2.c, ctx->Yi.c, sizeof(Yi2.c));
+                        ++ctr;
+                        if (IS_LITTLE_ENDIAN)
+#ifdef BSWAP4
+                            Yi2.d[3] = BSWAP4(ctr);
+#else
+                            PUTU32(Yi2.c + 12, ctr);
+#endif
+                        else
+                            Yi2.d[3] = ctr;
+
+                        hw_x86_64_sm4_encrypt256(ctx->Yi.c, Yi2.c,
+                            ctx->EKi.c, EKi2.c, key);
+
+                        ++ctr;
+                        if (IS_LITTLE_ENDIAN)
+#ifdef BSWAP4
+                            ctx->Yi.d[3] = BSWAP4(ctr);
+#else
+                            PUTU32(ctx->Yi.c + 12, ctr);
+#endif
+                        else
+                            ctx->Yi.d[3] = ctr;
+
+                        for (i = 0; i < 16 / sizeof(size_t); ++i) {
+                            out_t[i] = in_t[i] ^ ctx->EKi.t[i];
+                            out_t[i + 16 / sizeof(size_t)] =
+                                in_t[i + 16 / sizeof(size_t)] ^ EKi2.t[i];
+                        }
+                        out += 32;
+                        in += 32;
+                        len -= 32;
+                        continue;
+                    }
+#endif
+
+                    (*block)(ctx->Yi.c, ctx->EKi.c, key);
+                    ++ctr;
+                    if (IS_LITTLE_ENDIAN)
+#ifdef BSWAP4
+                        ctx->Yi.d[3] = BSWAP4(ctr);
+#else
+                        PUTU32(ctx->Yi.c + 12, ctr);
+#endif
+                    else
+                        ctx->Yi.d[3] = ctr;
+                    for (i = 0; i < 16 / sizeof(size_t); ++i)
+                        out_t[i] = in_t[i] ^ ctx->EKi.t[i];
+                    out += 16;
+                    in += 16;
+                    len -= 16;
+
+                    (*block)(ctx->Yi.c, ctx->EKi.c, key);
+                    ++ctr;
+                    if (IS_LITTLE_ENDIAN)
+#ifdef BSWAP4
+                        ctx->Yi.d[3] = BSWAP4(ctr);
+#else
+                        PUTU32(ctx->Yi.c + 12, ctr);
+#endif
+                    else
+                        ctx->Yi.d[3] = ctr;
+                    for (i = 0; i < 16 / sizeof(size_t); ++i)
+                        out_t[i + 16 / sizeof(size_t)] =
+                            in_t[i + 16 / sizeof(size_t)] ^ ctx->EKi.t[i];
+                    out += 16;
+                    in += 16;
+                    len -= 16;
+                }
                 while (len >= 16) {
                     size_t_aX *out_t = (size_t_aX *)out;
                     const size_t_aX *in_t = (const size_t_aX *)in;

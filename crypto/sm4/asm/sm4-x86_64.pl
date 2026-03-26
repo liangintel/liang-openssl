@@ -61,6 +61,8 @@ my ($userKey,$key) = ("%rdi","%rsi");
 
 # input arguments aliases for encrypt/decrypt
 my ($in,$out,$ks) = ("%rdi","%rsi","%rdx");
+# input arguments aliases for encrypt256
+my ($in1,$in2,$out1,$out2,$ks256) = ("%rdi","%rsi","%rdx","%rcx","%r8");
 
 $code.=<<___;
 .section .rodata align=64
@@ -144,6 +146,56 @@ ${prefix}_set_key:
     mov     \$1, %eax
     pop     %rbp
 .cfi_pop     %rbp
+    ret
+.cfi_endproc
+
+# void ${prefix}_encrypt256(const uint8_t *in1, const uint8_t *in2, uint8_t *out1, uint8_t *out2, const SM4_KEY *ks)
+
+.globl    ${prefix}_encrypt256
+.type     ${prefix}_encrypt256,\@function,3
+.align    32
+${prefix}_encrypt256:
+.cfi_startproc
+    endbranch
+# Prolog
+    push    %rbp
+.cfi_push   %rbp
+# Prolog ends here.
+.Lossl_${prefix}_encrypt256_seh_prolog_end:
+
+    vmovdqu         ($in1), %xmm0
+    vmovdqu         ($in2), %xmm1
+    vinserti128     \$1, %xmm1, %ymm0, %ymm0
+    vpshufb         IN_SHUFB(%rip), %ymm0, %ymm0
+
+    # note: to simplify binary instructions translation
+    mov             $ks256, %r10
+
+    vbroadcasti128  (%r10), %ymm1
+    vsm4rnds4       %ymm1, %ymm0, %ymm0
+    vbroadcasti128  16(%r10), %ymm1
+    vsm4rnds4       %ymm1, %ymm0, %ymm0
+    vbroadcasti128  32(%r10), %ymm1
+    vsm4rnds4       %ymm1, %ymm0, %ymm0
+    vbroadcasti128  48(%r10), %ymm1
+    vsm4rnds4       %ymm1, %ymm0, %ymm0
+    vbroadcasti128  64(%r10), %ymm1
+    vsm4rnds4       %ymm1, %ymm0, %ymm0
+    vbroadcasti128  80(%r10), %ymm1
+    vsm4rnds4       %ymm1, %ymm0, %ymm0
+    vbroadcasti128  96(%r10), %ymm1
+    vsm4rnds4       %ymm1, %ymm0, %ymm0
+    vbroadcasti128  112(%r10), %ymm1
+    vsm4rnds4       %ymm1, %ymm0, %ymm0
+
+    vpshufb         OUT_SHUFB(%rip), %ymm0, %ymm0
+    vmovdqu         %xmm0, ($out1)
+    vextracti128    \$1, %ymm0, %xmm1
+    vmovdqu         %xmm1, ($out2)
+    vpxor           %xmm0, %xmm0, %xmm0 # clear registers
+    vpxor           %xmm1, %xmm1, %xmm1
+    pop             %rbp
+.cfi_pop            %rbp
     ret
 .cfi_endproc
 
@@ -299,6 +351,24 @@ if ($avx2_sm4_ni_native > 0) { # SM4 instructions are supported in asm
       my $b3 = sprintf("0x%02x", 0xc0 | ($1 & 7) | (($3 & 7)<<3)                );
       return ".byte 0xc4,".$b1.",".$b2.",0xda,".$b3;
     }
+        elsif (($instr eq "vsm4rnds4") && ($args =~ /(\d*)\(([^)]+)\)\s*,\s*%ymm(\d{1,2})\s*,\s*%ymm(\d{1,2})/)) {
+            my $shift = $1;
+            my $b3_offset = 0x00;
+            if ($shift) {
+                $shift = ",0x".sprintf("%02x", $shift);
+                $b3_offset = 0x40;
+            }
+            my $b1 = sprintf("0x%02x", 0x42 | ((1-int($4/8))<<7) );
+            my $b2 = sprintf("0x%02x", 0x07 | (15 - $3 & 15)<<3                       );
+            my $b3 = sprintf("0x%02x", 0x02 | ($4 & 7)<<3 | $b3_offset                );
+            return ".byte 0xc4,".$b1.",".$b2.",0xda,".$b3.$shift;
+        }
+        elsif (($instr eq "vsm4rnds4") && ($args =~ /%ymm(\d{1,2})\s*,\s*%ymm(\d{1,2})\s*,\s*%ymm(\d{1,2})/)) {
+            my $b1 = sprintf("0x%02x", 0x62 | ((1-int($1/8))<<5) | ((1-int($3/8))<<7) );
+            my $b2 = sprintf("0x%02x", 0x07 | (15 - $2 & 15)<<3                       );
+            my $b3 = sprintf("0x%02x", 0xc0 | ($1 & 7) | (($3 & 7)<<3)                );
+            return ".byte 0xc4,".$b1.",".$b2.",0xda,".$b3;
+        }
     return $instr."\t".$args;
   }
 
